@@ -3,6 +3,10 @@ import math
 import pickle
 
 
+normal = 0
+liquid = 1
+
+
 class NeuralNetNode:
     def __init__(
         self, bias: float, weights: list[float], activation: callable = lambda x: x
@@ -127,6 +131,7 @@ class NeuralNetModel:
         expected_output: list[float],
         actual_output: list[float],
         learning_rate: float,
+        is_liquid: bool = False,
     ):
         """
         Perform backpropagation through the network.
@@ -135,6 +140,7 @@ class NeuralNetModel:
             expected_output (list[float]): The expected output values.
             actual_output (list[float]): The actual output values.
             learning_rate (float): The learning rate for weight updates.
+            is_liquid (bool, optional): Whether the model is a liquid model. Defaults to False.
         """
         # Calculate the error for the output layer
         output_errors = [
@@ -142,17 +148,29 @@ class NeuralNetModel:
             for expected, actual in zip(expected_output, actual_output)
         ]
 
-        # Backpropagate errors through the layers
-        errors = output_errors
-        for layer in reversed(self.layers):
-            layer.backpropagate(errors, learning_rate)
+        if is_liquid:
+            # Backpropagate errors through the output layer
+            errors = output_errors
+            self.layers[-1].backpropagate(errors, learning_rate)
             errors = [
                 sum(
                     node.weights[j] * sigmoid_derivative(node.output) * error
-                    for node, error in zip(layer.nodes, output_errors)
+                    for node, error in zip(self.layers[-1].nodes, output_errors)
                 )
-                for j in range(len(layer.nodes[0].weights))
+                for j in range(len(self.layers[-1].nodes[0].weights))
             ]
+        else:
+            # Backpropagate errors through the layers
+            errors = output_errors
+            for layer in reversed(self.layers):
+                layer.backpropagate(errors, learning_rate)
+                errors = [
+                    sum(
+                        node.weights[j] * sigmoid_derivative(node.output) * error
+                        for node, error in zip(layer.nodes, output_errors)
+                    )
+                    for j in range(len(layer.nodes[0].weights))
+                ]
 
     def train(
         self,
@@ -160,6 +178,7 @@ class NeuralNetModel:
         epochs: int,
         inputs: list[list[float]],
         outputs: list[list[float]],
+        is_liquid: bool = False,
     ):
         """
         Trains the neural network model using gradient descent.
@@ -169,6 +188,7 @@ class NeuralNetModel:
             epochs (int): The number of epochs to train for.
             inputs (list[list[float]]): A list of input values.
             outputs (list[list[float]]): A list of output values.
+            is_liquid (bool, optional): Whether the model is a liquid model. Defaults to False.
         """
         if learning_rate <= 0:
             raise ValueError("Learning rate must be greater than 0")
@@ -203,7 +223,29 @@ class NeuralNetModel:
                 )
 
                 self.backpropagate(expected_output, actual_output, learning_rate)
-                
+
+    def train_with_feedback(
+        self,
+        learning_rate: float,
+        epochs: int,
+        feedback_loops: int,
+        initial_inputs: list[list[float]],
+        initial_outputs: list[list[float]],
+        test_inputs: list[list[float]],
+        test_outputs: list[list[float]],
+        is_liquid: bool = False,
+    ):
+        # Initial training
+        self.train(learning_rate, epochs, initial_inputs, initial_outputs, is_liquid)
+
+        # Feedback loop for self-adjustment
+        for loop in range(feedback_loops):
+            print(f"Feedback Loop: {loop + 1}")
+            for x, expected in zip(test_inputs, test_outputs):
+                actual_output = self.calculate(x)
+                self.train(learning_rate, 1, [actual_output], [expected], is_liquid)
+                print(f"Test Input: {x}, Expected: {expected}, Actual: {actual_output}")
+
     def save(self, path: str):
         """
         Saves the model to a file.
@@ -213,6 +255,26 @@ class NeuralNetModel:
         """
         with open(path, "wb") as f:
             pickle.dump(self, f)
+
+    def test(self, inputs: list[list[float]], outputs: list[list[float]]):
+        """
+        Tests the neural network model on the given inputs and outputs.
+
+        Args:
+            inputs (list[list[float]]): A list of input values.
+            outputs (list[list[float]]): A list of output values.
+        """
+        if not inputs or not outputs:
+            raise ValueError("Inputs and outputs lists cannot be empty")
+        if len(inputs) != len(outputs):
+            raise ValueError("Inputs and outputs lists must have the same length")
+
+        for input, expected_output in zip(inputs, outputs):
+            actual_output = self.calculate(input)
+            error = calculate_error(expected_output, actual_output)
+            print(
+                f"Input: {input}, Expected: {expected_output}, Actual: {actual_output}, Error: {error}"
+            )
 
 
 def sigmoid(x: float) -> float:
@@ -263,7 +325,40 @@ def calculate_error(expected_output: list[float], actual_output: list[float]) ->
 
 class Architect:
     @staticmethod
-    def create(input_size: int, output_size: int, hidden_sizes: list[int]):
+    def create(
+        model_type: int, input_size: int, output_size: int, hidden_sizes: list[int]
+    ):
+        """
+        Creates a neural network model with the specified type, input size, output size, and hidden layer sizes.
+
+        Parameters:
+            model_type (int): The type of the neural network model.
+            input_size (int): The size of the input layer.
+            output_size (int): The size of the output layer.
+            hidden_sizes (list[int]): A list of integers representing the sizes of the hidden layers.
+
+        Returns:
+            NeuralNetModel: The created neural network model.
+            or LiquidNeuralNetModel: The created liquid neural network (LNN) model.
+
+        Raises:
+            ValueError: If the model type is invalid.
+        """
+        if model_type == 0:
+            return Architect._create_neural_net_model(
+                input_size, output_size, hidden_sizes
+            )
+        elif model_type == 1:
+            return Architect._create_liquid_neural_net_model(
+                input_size, output_size, hidden_sizes
+            )
+        else:
+            raise ValueError("Invalid model type")
+
+    @staticmethod
+    def _create_neural_net_model(
+        input_size: int, output_size: int, hidden_sizes: list[int]
+    ):
         """
         Creates a neural network model with the specified input size, output size, and hidden layer sizes.
 
@@ -309,7 +404,55 @@ class Architect:
         return NeuralNetModel(input_size, layers)
 
     @staticmethod
-    def load(path: str):
+    def _create_liquid_neural_net_model(
+        input_size: int, output_size: int, hidden_sizes: list[int]
+    ):
+        """
+        Creates a liquid neural network (LNN) model with the specified input size, output size, and hidden layer sizes.
+
+        Parameters:
+            input_size (int): The size of the input layer.
+            output_size (int): The size of the output layer.
+            hidden_sizes (list[int]): A list of integers representing the sizes of the hidden layers.
+
+        Returns:
+            NeuralNetModel: The created liquid neural network (LNN) model.
+        """
+        layers = []
+
+        prev_size = input_size
+        for size in hidden_sizes:
+            layers.append(
+                NeuralNetLayer(
+                    [
+                        NeuralNetNode(
+                            random.uniform(-0.5, 0.5),
+                            [random.uniform(-0.5, 0.5) for _ in range(prev_size)],
+                            sigmoid,
+                        )
+                        for _ in range(size)
+                    ]
+                )
+            )
+            prev_size = size
+
+        layers.append(
+            NeuralNetLayer(
+                [
+                    NeuralNetNode(
+                        random.uniform(-0.5, 0.5),
+                        [random.uniform(-0.5, 0.5) for _ in range(prev_size)],
+                        sigmoid,
+                    )
+                    for _ in range(output_size)
+                ]
+            )
+        )
+
+        return NeuralNetModel(input_size, layers)
+
+    @staticmethod
+    def load(path: str) -> NeuralNetModel:
         """
         Loads the model from a file.
 
@@ -333,3 +476,35 @@ def train(model: NeuralNetModel, inputs: list[list[float]], outputs: list[list[f
         outputs (list[list[float]]): A list of output values.
     """
     model.train(model, 0.1, 100, inputs, outputs)
+
+
+def train_test_split(X: list[float], y: list[float], test_size: float):
+    """
+    Splits the input data into training and test sets. Randomizes the order.
+    Splits the input data into training and test sets.
+
+    Args:
+        X (list[float]): The input data.
+        y (list[float]): The target data.
+        test_size (float): The proportion of the data to use for the test set.
+
+    Returns:
+        tuple[list[float], list[float], list[float], list[float]]: The training and test sets.
+    """
+    if len(X) != len(y):
+        raise ValueError("X and y must have the same length")
+
+    if test_size <= 0 or test_size >= 1:
+        raise ValueError("Test size must be between 0 and 1")
+
+    n = len(X)
+    indices = list(range(n))
+    random.shuffle(indices)
+    test_indices = indices[: int(n * test_size)]
+    train_indices = indices[int(n * test_size) :]
+    X_train, X_test = [X[i] for i in train_indices], [X[i] for i in test_indices]
+    y_train, y_test = [y[i] for i in train_indices], [y[i] for i in test_indices]
+    train_size = 1 - test_size
+    X_train, X_test = X[: int(train_size * len(X))], X[int(train_size * len(X)) :]
+    y_train, y_test = y[: int(train_size * len(y))], y[int(train_size * len(y)) :]
+    return X_train, X_test, y_train, y_test
