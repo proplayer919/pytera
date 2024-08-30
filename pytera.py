@@ -2,6 +2,8 @@ import random
 import math
 import pickle
 
+import numpy as np
+
 
 normal = 0
 liquid = 1
@@ -191,13 +193,13 @@ class NeuralNetModel:
             is_liquid (bool, optional): Whether the model is a liquid model. Defaults to False.
         """
         if learning_rate <= 0:
-            raise ValueError("Learning rate must be greater than 0")
+            raise ValueError(f"Learning rate must be greater than 0 (got {learning_rate})")
         if epochs <= 0:
-            raise ValueError("Epochs must be greater than 0")
+            raise ValueError(f"Epochs must be greater than 0 (got {epochs})")
         if not inputs or not outputs:
             raise ValueError("Inputs and outputs lists cannot be empty")
         if len(inputs) != len(outputs):
-            raise ValueError("Inputs and outputs lists must have the same length")
+            raise ValueError(f"Inputs ({len(inputs)}) and outputs ({len(outputs)}) lists must have the same length")
 
         for epoch in range(epochs):
             for i in range(len(inputs)):
@@ -209,10 +211,10 @@ class NeuralNetModel:
                         "Inputs and outputs lists cannot contain empty lists"
                     )
                 if len(input) != self.input_size:
-                    raise ValueError("Input size must match the model input size")
+                    raise ValueError(f"Input size ({len(input)}) must match the model input size ({self.input_size})")
                 if len(expected_output) != len(self.layers[-1].nodes):
                     raise ValueError(
-                        "Output size must match the number of nodes in the last layer"
+                        f"Output size ({len(expected_output)}) must match the number of nodes in the last layer ({len(self.layers[-1].nodes)})"
                     )
 
                 actual_output = self.calculate(input)
@@ -275,6 +277,287 @@ class NeuralNetModel:
             print(
                 f"Input: {input}, Expected: {expected_output}, Actual: {actual_output}, Error: {error}"
             )
+
+
+class Tokenizer:
+    def __init__(self, vocab: list):
+        """
+        Initializes a tokenizer with a given vocabulary.
+
+        Args:
+            vocab (list): A list of tokens.
+        """
+        self.vocab = vocab
+
+    def tokenize(self, text: str) -> list[int]:
+        """
+        Converts a text string into a list of token indices.
+
+        Args:
+            text (str): The input text string.
+
+        Returns:
+            list[int]: A list of token indices.
+        """
+        return [self.vocab.index(token) if token in self.vocab else self.vocab.index("<UNK>") for token in text.split()]
+
+    def detokenize(self, tokens: list[int]) -> str:
+        """
+        Converts a list of token indices back into a text string.
+
+        Args:
+            tokens (list[int]): A list of token indices.
+
+        Returns:
+            str: The resulting text string.
+        """
+        return " ".join([self.vocab[token] if token < len(self.vocab) else "<UNK>" for token in tokens])
+
+
+class PositionalEncoding:
+    def __init__(self, d_model: int, max_len: int = 5000):
+        position = np.arange(max_len).reshape(-1, 1)
+        div_term = np.exp(np.arange(0, d_model, 2) * -(np.log(10000.0) / d_model))
+        pe = np.zeros((max_len, d_model))
+        pe[:, 0::2] = np.sin(position * div_term)
+        pe[:, 1::2] = np.cos(position * div_term)
+        self.encoding = pe
+
+    def __call__(self, x: np.ndarray) -> np.ndarray:
+        """
+        Adds positional encoding to the input tensor.
+
+        Args:
+            x (np.ndarray): The input tensor of shape (seq_len, d_model).
+
+        Returns:
+            np.ndarray: The tensor with positional encoding added.
+        """
+        seq_len, d_model = x.shape
+        return x + self.encoding[:seq_len, :]
+
+
+class MultiHeadAttention:
+    def __init__(self, d_model: int, num_heads: int):
+        """
+        Implements the multi-head attention mechanism.
+
+        Args:
+            d_model (int): The dimension of the model.
+            num_heads (int): The number of attention heads.
+        """
+        self.num_heads = num_heads
+        self.d_k = d_model // num_heads
+
+        self.q_linear = np.random.rand(d_model, d_model)
+        self.k_linear = np.random.rand(d_model, d_model)
+        self.v_linear = np.random.rand(d_model, d_model)
+        self.out_linear = np.random.rand(d_model, d_model)
+
+    def _split_heads(self, x: np.ndarray) -> np.ndarray:
+        return x.reshape(x.shape[0], -1, self.num_heads, self.d_k).transpose(0, 2, 1, 3)
+
+    def _scaled_dot_product_attention(
+        self, q: np.ndarray, k: np.ndarray, v: np.ndarray
+    ):
+        scores = np.matmul(q, k.transpose(0, 1, 3, 2)) / np.sqrt(self.d_k)
+        weights = np.exp(scores - np.max(scores, axis=-1, keepdims=True))
+        weights /= np.sum(weights, axis=-1, keepdims=True)
+        return np.matmul(weights, v)
+
+    def __call__(
+        self, query: np.ndarray, key: np.ndarray, value: np.ndarray
+    ) -> np.ndarray:
+        q = np.dot(query, self.q_linear)
+        k = np.dot(key, self.k_linear)
+        v = np.dot(value, self.v_linear)
+
+        q, k, v = map(self._split_heads, (q, k, v))
+
+        attention = self._scaled_dot_product_attention(q, k, v)
+        attention = attention.transpose(0, 2, 1, 3).reshape(
+            query.shape[0], -1, self.num_heads * self.d_k
+        )
+        return np.dot(attention, self.out_linear)
+
+
+class TransformerBlock:
+    def __init__(self, d_model: int, num_heads: int, ff_dim: int):
+        """
+        Implements a single transformer block with multi-head attention and feedforward layers.
+
+        Args:
+            d_model (int): The dimension of the model.
+            num_heads (int): The number of attention heads.
+            ff_dim (int): The dimension of the feedforward network.
+        """
+        self.attention = MultiHeadAttention(d_model, num_heads)
+        self.ffn = [np.random.rand(d_model, ff_dim), np.random.rand(ff_dim, d_model)]
+
+    def __call__(self, x: np.ndarray) -> np.ndarray:
+        attn_output = self.attention(x, x, x)
+        ff_output = np.maximum(0, np.dot(attn_output, self.ffn[0]))  # ReLU activation
+        ff_output = np.dot(ff_output, self.ffn[1])
+        return ff_output
+
+
+class GPTModel(NeuralNetModel):
+    def __init__(
+        self,
+        input_size: int,
+        d_model: int,
+        num_heads: int,
+        ff_dim: int,
+        num_layers: int,
+        vocab_size: int,
+        vocab: list[str],
+    ):
+        super().__init__(input_size, [])
+        self.tokenizer = Tokenizer(vocab)
+        self.embedding = np.random.rand(vocab_size, d_model)
+        self.positional_encoding = PositionalEncoding(d_model)
+        self.transformer_blocks = [
+            TransformerBlock(d_model, num_heads, ff_dim) for _ in range(num_layers)
+        ]
+        self.final_linear = np.random.rand(d_model, vocab_size)
+        self.vocab_size = vocab_size
+
+    def calculate(self, text: str) -> np.ndarray:
+        tokens = self.tokenizer.tokenize(text)
+        embeddings = self.embedding[tokens]  # Shape: (seq_len, d_model)
+        embeddings = self.positional_encoding(embeddings)  # Shape: (seq_len, d_model)
+
+        for block in self.transformer_blocks:
+            embeddings = block(embeddings)
+
+        logits = np.dot(embeddings, self.final_linear)  # Shape: (seq_len, vocab_size)
+        return logits
+
+    def generate_text(self, prompt: str, max_length: int = 50) -> str:
+        generated_text = prompt
+        for _ in range(max_length):
+            logits = self.calculate(generated_text)
+            probabilities = np.exp(logits[-1]) / np.sum(np.exp(logits[-1]), axis=-1)
+            next_token = np.argmax(probabilities)
+            next_word = self.tokenizer.detokenize([next_token])
+            generated_text += " " + next_word
+            if next_word == "<EOS>":
+                break
+        return generated_text
+
+    def train(self, dataset: list[str], epochs: int = 10, learning_rate: float = 0.001):
+        for epoch in range(epochs):
+            total_loss = 0
+            for text in dataset:
+                tokens = self.tokenizer.tokenize(text)
+                target = tokens[1:] + [
+                    self.tokenizer.tokenize("<EOS>")[0]
+                ]  # Shift tokens for target
+
+                # Forward pass
+                logits = self.calculate(text[:-1])  # Exclude last token for input
+                loss = self.cross_entropy_loss(logits, target)
+                total_loss += loss
+
+                # Backward pass
+                gradients = self.backpropagate(logits, target)
+                self.update_weights(gradients, learning_rate)
+
+            print(f"Epoch {epoch + 1}/{epochs}, Loss: {total_loss / len(dataset)}")
+
+    def softmax(self, logits: np.ndarray) -> np.ndarray:
+        max_logits = np.max(logits, axis=-1, keepdims=True)
+        stable_logits = logits - max_logits
+        exp_logits = np.exp(stable_logits)
+        sum_exp_logits = np.sum(exp_logits, axis=-1, keepdims=True)
+        probabilities = exp_logits / sum_exp_logits
+        return probabilities
+
+    def cross_entropy_loss(self, logits: np.ndarray, target: list[int]) -> float:
+        """
+        Computes the cross-entropy loss between logits and the target tokens.
+
+        Args:
+            logits (np.ndarray): The output logits from the model.
+            target (list[int]): The target token indices.
+
+        Returns:
+            float: The computed cross-entropy loss.
+        """
+        assert logits is not None, "Logits should not be None"
+        assert target is not None, "Target should not be None"
+        assert len(target) > 0, "Target should not be empty"
+
+        print("Logits shape:", logits.shape)
+        logits = np.squeeze(logits, axis=1)
+        print("Logits shape after squeeze:", logits.shape)
+        probabilities = self.softmax(logits)
+        print("Probabilities shape:", probabilities.shape)
+        print("Probabilities:", probabilities)
+        print("Target shape:", len(target))
+        print("Target indices:", target)
+
+        # make sure no index is out of range
+        for index in target:
+            if index >= probabilities.shape[1]:
+                target[target.index(index)] = probabilities.shape[1] - 1
+
+        if len(target) > logits.shape[0]:
+            raise ValueError(
+                f"Target length {len(target)} is greater than logits length {logits.shape[0]}"
+            )
+
+        correct_log_probs = -np.log(probabilities[range(len(target)), target])
+        return np.sum(correct_log_probs) / len(target)
+
+    def backpropagate(self, logits: np.ndarray, target: list[int]) -> list[np.ndarray]:
+        """
+        Performs backpropagation to compute the gradients of the loss with respect to model weights.
+
+        Args:
+            logits (np.ndarray): The output logits from the model.
+            target (list[int]): The target token indices.
+
+        Returns:
+            list[np.ndarray]: The gradients for each weight matrix in the model.
+        """
+        probabilities = np.exp(logits) / np.sum(np.exp(logits), axis=-1, keepdims=True)
+        probabilities = np.squeeze(probabilities, axis=1)
+        print("Probabilities:", probabilities)
+        print("Probabilities shape:", probabilities.shape)
+        probabilities[
+            range(len(target)), target
+        ] -= 1  # Subtract 1 from the correct class
+        gradients = []
+
+        print("Embedding shape (T):", self.embedding.T.shape)
+
+        # Compute gradient for the final linear layer
+        grad_final_linear = np.dot(probabilities, self.embedding.T)
+        gradients.append(grad_final_linear)
+
+        # Backpropagate through the transformer blocks
+        grad_embeddings = np.dot(probabilities, self.final_linear.T)
+        for block in reversed(self.transformer_blocks):
+            grad_embeddings = block.backward(grad_embeddings)
+        gradients.append(grad_embeddings)
+
+        return gradients
+
+    def update_weights(self, gradients: list[np.ndarray], learning_rate: float):
+        """
+        Updates the model's weights using the computed gradients and the learning rate.
+
+        Args:
+            gradients (list[np.ndarray]): The computed gradients for the weights.
+            learning_rate (float): The learning rate for the update.
+        """
+        # Update weights for the final linear layer
+        self.final_linear -= learning_rate * gradients[0]
+
+        # Update weights for the transformer blocks
+        for block, grad in zip(self.transformer_blocks, gradients[1:]):
+            block.update_weights(grad, learning_rate)
 
 
 def sigmoid(x: float) -> float:
